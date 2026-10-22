@@ -189,14 +189,79 @@ function readDB() {
   // Раньше версия ниже 3 полностью заменялась DEFAULTS, из-за чего терялась база.
   for (const [key, value] of Object.entries(DEFAULTS)) if (DB[key] === undefined) DB[key] = clone(value);
   if (!Array.isArray(DB.accounts)) DB.accounts = [];
+  if (!Array.isArray(DB.students)) DB.students = [];
   if (!Array.isArray(DB.groups)) DB.groups = clone(DEFAULTS.groups);
   if (!DB.groups.length) DB.groups = clone(DEFAULTS.groups);
-  for (const g of DB.groups) { if (!Array.isArray(g.schedule)) g.schedule = createBlankWeek(); if (!g.times || typeof g.times !== 'object') g.times = {}; }
+  for (const g of DB.groups) {
+    if (!Array.isArray(g.schedule)) g.schedule = createBlankWeek();
+    if (!g.times || typeof g.times !== 'object' || Array.isArray(g.times)) g.times = {};
+  }
   if (!DB.sessions || typeof DB.sessions !== 'object') DB.sessions = {};
+
+  // Legacy versions used one shared DB.sch/DB.times timetable. After schedules
+  // became group-specific, empty group.schedule arrays hid that old timetable
+  // because [] is truthy in JavaScript. Copy the old timetable into groups
+  // that still have no lessons, but never overwrite a group-specific schedule.
+  const scheduleHasLessons = schedule => Array.isArray(schedule)
+    && schedule.some(day => Array.isArray(day && day.lessons) && day.lessons.length > 0);
+  const legacyScheduleHasLessons = scheduleHasLessons(DB.sch);
+  const populatedGroupScheduleExists = DB.groups.some(g => scheduleHasLessons(g.schedule));
+  const legacyTimes = DB.times && typeof DB.times === 'object' && !Array.isArray(DB.times) ? DB.times : {};
+  const legacyTimesExist = Object.keys(legacyTimes).length > 0;
+  const populatedGroupTimesExist = DB.groups.some(g => Object.keys(g.times || {}).length > 0);
+  const groupsWithStudents = DB.groups.filter(g => DB.accounts.some(a =>
+    ['student', 'starosta'].includes(a.role) && (a.group === g.id || a.group === g.name)));
+  const migrationTargets = groupsWithStudents.length ? groupsWithStudents : DB.groups;
+  if (legacyScheduleHasLessons && !populatedGroupScheduleExists) {
+    for (const g of migrationTargets) g.schedule = clone(DB.sch);
+    console.log(`Миграция расписания: старое общее расписание перенесено в ${migrationTargets.length} групп(ы).`);
+  } else if (legacyScheduleHasLessons && populatedGroupScheduleExists) {
+    for (const g of migrationTargets) if (!scheduleHasLessons(g.schedule)) g.schedule = clone(DB.sch);
+    console.log('Миграция расписания: пустые расписания групп заполнены старым общим расписанием; существующие расписания сохранены.');
+  }
+  if (legacyTimesExist && !populatedGroupTimesExist) {
+    for (const g of migrationTargets) g.times = clone(legacyTimes);
+    console.log(`Миграция времени пар: старые настройки времени перенесены в ${migrationTargets.length} групп(ы).`);
+  } else if (legacyTimesExist && populatedGroupTimesExist) {
+    for (const g of migrationTargets) if (!Object.keys(g.times || {}).length) g.times = clone(legacyTimes);
+  }
+
+  const normalizePerson = value => String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru');
   for (const account of DB.accounts) {
     if (account.pass && !account.passHash) account.passHash = hashPassword(account.pass);
     delete account.pass;
     if (!account.id) account.id = id();
+
+    // Old account records may not contain studentIndex. Grades and attendance
+    // use that index in keys such as day:pair:studentIndex, so a missing index
+    // makes records appear empty even though they are still in DB.grades/DB.att.
+    if (['student', 'starosta'].includes(account.role)) {
+      const rawStudentIndex = account.studentIndex;
+      const numericStudentIndex = (rawStudentIndex === null || rawStudentIndex === undefined || rawStudentIndex === '')
+        ? NaN : Number(rawStudentIndex);
+      if (Number.isInteger(numericStudentIndex) && numericStudentIndex >= 0 && numericStudentIndex < DB.students.length) {
+        // Canonicalize numeric strings so strict comparisons in the client work.
+        account.studentIndex = numericStudentIndex;
+        continue;
+      }
+      const fio = normalizePerson(account.fio);
+      let studentIndex = DB.students.findIndex(name => {
+        const rosterName = normalizePerson(name);
+        return rosterName && (fio === rosterName || fio.startsWith(rosterName + ' '));
+      });
+      if (studentIndex < 0) {
+        const shortName = String(account.fio || '').trim().split(/\s+/).slice(0, 2).join(' ');
+        if (shortName) {
+          const normalizedShort = normalizePerson(shortName);
+          studentIndex = DB.students.findIndex(name => normalizePerson(name) === normalizedShort);
+          if (studentIndex < 0) {
+            studentIndex = DB.students.length;
+            DB.students.push(shortName);
+          }
+        }
+      }
+      if (studentIndex >= 0) account.studentIndex = studentIndex;
+    }
   }
   DB.accounts = DB.accounts.filter(a => a.role !== 'dev');
   DB.accounts.push({ id: 'developer', fio: 'Разработчик', login: DEV_LOGIN, passHash: hashPassword(DEV_PASSWORD), role: 'dev', subj: '', group: '', studentIndex: null });
@@ -204,7 +269,8 @@ function readDB() {
   purgeSessions();
   ensurePush();
   writeDBNow();
-  console.log(`База данных: ${DB_FILE}; версия ${DB.version}; пользователей ${DB.accounts.filter(a => a.role !== 'dev').length}; групп ${DB.groups.length}`);
+  const countLessons = schedule => (Array.isArray(schedule) ? schedule : []).reduce((sum, day) => sum + (Array.isArray(day && day.lessons) ? day.lessons.length : 0), 0);
+  console.log(`База данных: ${DB_FILE}; версия ${DB.version}; пользователей ${DB.accounts.filter(a => a.role !== 'dev').length}; студентов в списке ${DB.students.length}; групп ${DB.groups.length}; оценок ${Object.keys(DB.grades || {}).length}; отметок посещаемости ${Object.keys(DB.att || {}).length}; занятий в общем расписании ${countLessons(DB.sch)}; занятий в расписаниях групп ${DB.groups.reduce((sum, g) => sum + countLessons(g.schedule), 0)}; временных слотов ${Object.keys(DB.times || {}).length}`);
 }
 function writeDBNow() {
   fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
