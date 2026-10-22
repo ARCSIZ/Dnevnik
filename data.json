@@ -134,16 +134,6 @@
       "dob": "01.08.2009"
     },
     {
-      "id": "developer",
-      "fio": "Разработчик",
-      "login": "arcsiz",
-      "passHash": "scrypt$6e552e385114b8bda8043061b3501aee$9b4fcc2bab6909950eb3ea9f929d9d3d1ff00d642d83db560716296abc25907b52456627561686a6357b3453e61d111b29904b340b1f64498bbcf9f73006bb2d",
-      "role": "dev",
-      "subj": "",
-      "group": "",
-      "studentIndex": null
-    },
-    {
       "id": "020c99b3-209d-4603-a6e8-88d28bb22562",
       "fio": "Селецкая Екатерина Леонидовна",
       "login": "ekaterinaleonidovna",
@@ -163,13 +153,19 @@
       "group": "02-СД-25-о",
       "studentIndex": 13,
       "dob": "30.08.2007"
+    },
+    {
+      "id": "developer",
+      "fio": "Разработчик",
+      "login": "arcsiz",
+      "passHash": "scrypt$9eb5e45e5470910be3cde76382a165b8$98953b23f0dc473c1b9d55b823491da16b226600ae1ff5de0e28775990453ae1fcf03357bfa1fced132a8750205f3fe713c695a138c52013366cbe1ec8cec5d6",
+      "role": "dev",
+      "subj": "",
+      "group": "",
+      "studentIndex": null
     }
   ],
   "sessions": {
-    "ef97f13afff92a5bc2cd9bfa35750de4fcb26dc3e8fc6e27053113fa36546ee7": {
-      "login": "arcsiz",
-      "expires": 1795257562506
-    },
     "134c25e8c1e4efac9c798343e663f84240809d879a85799c7fb0d415702a9021": {
       "login": "velvet.exe27",
       "expires": 1793212264676
@@ -198,14 +194,6 @@
       "login": "valeria2109",
       "expires": 1793224480713
     },
-    "cba7a06765198dbe7c37325d0c7e9a08bf2933258449706f6d3b5c4af25c78ac": {
-      "login": "arcsiz",
-      "expires": 1793244851364
-    },
-    "c2543184e6c45fce63f2138503bbe6f2aaeba14ff020441b51b2dfa9a74314c6": {
-      "login": "arcsiz",
-      "expires": 1793244945483
-    },
     "a3be2b7ae754beeb9a99c7e1bcaf5d37e194ce7ee4e104dd4309c02552739161": {
       "login": "samirgamidov",
       "expires": 1793244980447
@@ -213,10 +201,6 @@
     "8da1a255c219058c82b56655cdc8d191e8b1142cb5ac40770595ce9b34725fe9": {
       "login": "marsiwey",
       "expires": 1793247462624
-    },
-    "fe4e05928ba34e6ad0c44c07f23b216ab3c7611b948dfd76b4c6a87721481b87": {
-      "login": "arcsiz",
-      "expires": 1793249438336
     },
     "f75605fea09efd99074a3a8918f095a73e67e4ec640d27f566c594cb29addf69": {
       "login": "samirgamidov",
@@ -261,10 +245,6 @@
     "854ccdf6ee060e337090906b373321caac263076fad73c644672ba1b95f113b7": {
       "login": "sofia2009q",
       "expires": 1795249163051
-    },
-    "235eea99c87baa7c6e182e477e6266c5fc5a74de1a7532770af2f895f14bf219": {
-      "login": "arcsiz",
-      "expires": 1795250612613
     },
     "b6d31f4cf1e92c9976d9c9944157379857c178db273d6157485d825a62ffaf32": {
       "login": "anastasia",
