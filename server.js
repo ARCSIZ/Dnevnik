@@ -161,6 +161,21 @@ function verifyPassword(password, encoded) {
 }
 
 let DB;
+// Нормализуем название группы: регистр, лишние пробелы и разные виды тире
+// не должны приводить к потере расписания для студента.
+const normalizeGroupKey = value => String(value || '').normalize('NFKC')
+  .trim().replace(/[\u2010-\u2015\u2212]/g, '-')
+  .replace(/\s+/g, ' ').toLocaleLowerCase('ru');
+const groupValueMatches = (value, group) => {
+  const key = normalizeGroupKey(value);
+  return !!key && [group && group.id, group && group.name].some(v => normalizeGroupKey(v) === key);
+};
+const findGroupByValue = value => {
+  const key = normalizeGroupKey(value);
+  return key ? DB.groups.find(g => groupValueMatches(key, g)) || null : null;
+};
+const scheduleHasLessons = schedule => Array.isArray(schedule)
+  && schedule.some(day => Array.isArray(day && day.lessons) && day.lessons.length > 0);
 function purgeSessions() {
   const now = Date.now();
   for (const [key, session] of Object.entries(DB.sessions || {})) {
@@ -202,15 +217,13 @@ function readDB() {
   // became group-specific, empty group.schedule arrays hid that old timetable
   // because [] is truthy in JavaScript. Copy the old timetable into groups
   // that still have no lessons, but never overwrite a group-specific schedule.
-  const scheduleHasLessons = schedule => Array.isArray(schedule)
-    && schedule.some(day => Array.isArray(day && day.lessons) && day.lessons.length > 0);
   const legacyScheduleHasLessons = scheduleHasLessons(DB.sch);
   const populatedGroupScheduleExists = DB.groups.some(g => scheduleHasLessons(g.schedule));
   const legacyTimes = DB.times && typeof DB.times === 'object' && !Array.isArray(DB.times) ? DB.times : {};
   const legacyTimesExist = Object.keys(legacyTimes).length > 0;
   const populatedGroupTimesExist = DB.groups.some(g => Object.keys(g.times || {}).length > 0);
   const groupsWithStudents = DB.groups.filter(g => DB.accounts.some(a =>
-    ['student', 'starosta'].includes(a.role) && (a.group === g.id || a.group === g.name)));
+    ['student', 'starosta'].includes(a.role) && groupValueMatches(a.group, g)));
   const migrationTargets = groupsWithStudents.length ? groupsWithStudents : DB.groups;
   if (legacyScheduleHasLessons && !populatedGroupScheduleExists) {
     for (const g of migrationTargets) g.schedule = clone(DB.sch);
@@ -232,35 +245,45 @@ function readDB() {
     delete account.pass;
     if (!account.id) account.id = id();
 
-    // Old account records may not contain studentIndex. Grades and attendance
-    // use that index in keys such as day:pair:studentIndex, so a missing index
-    // makes records appear empty even though they are still in DB.grades/DB.att.
+    // Старые базы иногда содержат формально допустимый, но неверный studentIndex.
+    // Сначала сопоставляем по ФИО со списком журнала, иначе оценки есть в журнале,
+    // но пропадают у конкретного студента на главной странице.
     if (['student', 'starosta'].includes(account.role)) {
+      const normalizePerson = value => String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru');
+      const fio = normalizePerson(account.fio);
+      const rosterMatchesFio = name => {
+        const rosterName = normalizePerson(name);
+        return !!rosterName && (fio === rosterName || fio.startsWith(rosterName + ' '));
+      };
       const rawStudentIndex = account.studentIndex;
       const numericStudentIndex = (rawStudentIndex === null || rawStudentIndex === undefined || rawStudentIndex === '')
         ? NaN : Number(rawStudentIndex);
-      if (Number.isInteger(numericStudentIndex) && numericStudentIndex >= 0 && numericStudentIndex < DB.students.length) {
-        // Canonicalize numeric strings so strict comparisons in the client work.
+      const indexIsValid = Number.isInteger(numericStudentIndex) && numericStudentIndex >= 0 && numericStudentIndex < DB.students.length;
+      const nameIndex = DB.students.findIndex(rosterMatchesFio);
+      if (nameIndex >= 0) {
+        if (account.studentIndex !== nameIndex) {
+          console.log(`Сопоставление студента по ФИО: ${safeText(account.fio, 80)}; индекс ${String(account.studentIndex)} -> ${nameIndex}.`);
+        }
+        account.studentIndex = nameIndex;
+      } else if (indexIsValid) {
         account.studentIndex = numericStudentIndex;
-        continue;
-      }
-      const fio = normalizePerson(account.fio);
-      let studentIndex = DB.students.findIndex(name => {
-        const rosterName = normalizePerson(name);
-        return rosterName && (fio === rosterName || fio.startsWith(rosterName + ' '));
-      });
-      if (studentIndex < 0) {
+      } else {
         const shortName = String(account.fio || '').trim().split(/\s+/).slice(0, 2).join(' ');
         if (shortName) {
           const normalizedShort = normalizePerson(shortName);
-          studentIndex = DB.students.findIndex(name => normalizePerson(name) === normalizedShort);
+          let studentIndex = DB.students.findIndex(name => normalizePerson(name) === normalizedShort);
           if (studentIndex < 0) {
             studentIndex = DB.students.length;
             DB.students.push(shortName);
           }
+          account.studentIndex = studentIndex;
         }
       }
-      if (studentIndex >= 0) account.studentIndex = studentIndex;
+      // Канонизируем название группы в аккаунте, чтобы главная и журнал
+      // получали одну и ту же групповую программу даже при разных тире/пробелах.
+      const matchedGroup = findGroupByValue(account.group);
+      if (matchedGroup) account.group = matchedGroup.id || matchedGroup.name;
+      else if (!normalizeGroupKey(account.group) && DB.groups.length === 1) account.group = DB.groups[0].id || DB.groups[0].name;
     }
   }
   DB.accounts = DB.accounts.filter(a => a.role !== 'dev');
@@ -670,13 +693,19 @@ async function handleApi(req, res, url) {
     // Разработчик может выбрать группу для редактирования её собственного расписания.
     // Остальные роли всегда получают расписание только своей группы.
     const requestedGroup = user.role === 'dev' ? safeText(url.searchParams.get('group'), 80) : safeText(user.group, 80);
-    const group = requestedGroup ? DB.groups.find(g => g.id === requestedGroup || g.name === requestedGroup) : null;
+    const group = findGroupByValue(requestedGroup);
     if (user.role === 'dev' && url.searchParams.has('group') && !group) return json(res, 404, { ok: false, error: 'Учебная группа не найдена' });
-    const grades = staff ? DB.grades : Object.fromEntries(Object.entries(DB.grades).filter(([key]) => Number(key.split(':')[2]) === user.studentIndex));
-    const att = staff ? DB.att : Object.fromEntries(Object.entries(DB.att).filter(([key]) => Number(key.split(':')[2]) === user.studentIndex));
+    const studentIndex = Number.isInteger(Number(user.studentIndex)) ? Number(user.studentIndex) : user.studentIndex;
+    const grades = staff ? DB.grades : Object.fromEntries(Object.entries(DB.grades).filter(([key]) => Number(key.split(':')[2]) === studentIndex));
+    const att = staff ? DB.att : Object.fromEntries(Object.entries(DB.att).filter(([key]) => Number(key.split(':')[2]) === studentIndex));
     const groupTimes = group && Object.keys(group.times || {}).length ? group.times : DB.times;
+    // Некоторые старые базы сохранили уроки только в общем DB.sch. Не скрываем
+    // их за пустым семидневным массивом group.schedule.
+    const stateSchedule = group && scheduleHasLessons(group.schedule)
+      ? group.schedule
+      : scheduleHasLessons(DB.sch) ? DB.sch : (group && Array.isArray(group.schedule) ? group.schedule : DB.sch);
     return json(res, 200, {
-      grades, att, hw: DB.hw, sch: group?.schedule || DB.sch, ev: DB.ev, times: groupTimes,
+      grades, att, hw: DB.hw, sch: stateSchedule, ev: DB.ev, times: groupTimes,
       groupInfo: group ? { name: group.name, specialty: group.specialty, course: group.course, curatorLogin: group.curatorLogin, starostaLogin: group.starostaLogin } : null,
       start: SCHEDULE_START_ISO, students: staff ? DB.students : undefined, revision: DB.updatedAt || null
     });
@@ -685,7 +714,7 @@ async function handleApi(req, res, url) {
     const user = requireAuth(req, res); if (!user) return;
     if (!['curator', 'dev'].includes(user.role)) return json(res, 403, { ok: false, error: 'Просматривать успеваемость группы может только куратор или разработчик' });
     const requestedGroup = user.role === 'curator' ? safeText(user.group, 80) : safeText(url.searchParams.get('group'), 80);
-    const group = requestedGroup ? DB.groups.find(g => g.id === requestedGroup || g.name === requestedGroup) : null;
+    const group = findGroupByValue(requestedGroup);
     if (!group) return json(res, 400, { ok: false, error: user.role === 'curator' ? 'За вашим аккаунтом не закреплена группа' : 'Выберите учебную группу' });
     const rosterMap = new Map();
     for (const account of DB.accounts) {
@@ -723,7 +752,7 @@ async function handleApi(req, res, url) {
     if (part === 'sch') {
       if (!can(user, 'schedule')) return json(res, 403, { ok: false, error: 'Нет права менять расписание' });
       const requestedGroup = user.role === 'dev' ? safeText(url.searchParams.get('group'), 80) : safeText(user.group, 80);
-      const group = requestedGroup ? DB.groups.find(g => g.id === requestedGroup || g.name === requestedGroup) : null;
+      const group = findGroupByValue(requestedGroup);
       if (user.role === 'dev' && url.searchParams.has('group') && !group) return json(res, 404, { ok: false, error: 'Учебная группа не найдена' });
       const currentSchedule = group?.schedule || DB.sch;
       const scheduleTimes = group && Object.keys(group.times || {}).length ? group.times : DB.times;
@@ -745,7 +774,7 @@ async function handleApi(req, res, url) {
     } else if (part === 'times') {
       if (!can(user, 'times')) return json(res, 403, { ok: false, error: 'Нет права менять время пар' });
       const requestedGroup = user.role === 'dev' ? safeText(url.searchParams.get('group'), 80) : safeText(user.group, 80);
-      const group = requestedGroup ? DB.groups.find(g => g.id === requestedGroup || g.name === requestedGroup) : null;
+      const group = findGroupByValue(requestedGroup);
       if (user.role === 'dev' && url.searchParams.has('group') && !group) return json(res, 404, { ok: false, error: 'Учебная группа не найдена' });
       if (group) group.times = sanitizeTimes(input); else DB.times = sanitizeTimes(input); scheduleChanged(user.login);
     } else if (part === 'grades') {
@@ -787,7 +816,7 @@ async function handleApi(req, res, url) {
     const user = requireAuth(req, res, 'schedule'); if (!user) return;
     const input = await readBody(req);
     const requestedGroup = user.role === 'dev' ? safeText(url.searchParams.get('group'), 80) : safeText(user.group, 80);
-    const group = requestedGroup ? DB.groups.find(g => g.id === requestedGroup || g.name === requestedGroup) : null;
+    const group = findGroupByValue(requestedGroup);
     if (user.role === 'dev' && url.searchParams.has('group') && !group) return json(res, 404, { ok: false, error: 'Учебная группа не найдена' });
     const baseTimes = group && Object.keys(group.times || {}).length ? group.times : DB.times;
     let times = baseTimes;

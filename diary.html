@@ -110,8 +110,8 @@
 
   /* ---------- Подразделы дня ---------- */
   .subtabs { position: relative; display: flex; border-radius: 15px; background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.07); padding: 4px; }
-  .subtab-ind { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc(50% - 4px); border-radius: 11px; background: linear-gradient(135deg, rgba(109,91,255,.85), rgba(168,85,247,.85)); box-shadow: 0 6px 18px -6px rgba(124,108,255,.6), inset 0 1px 0 rgba(255,255,255,.2); transition: transform .42s cubic-bezier(.22,1.2,.36,1); }
-  .subtab-btn { position: relative; z-index: 1; flex: 1; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 9.5px 0; border-radius: 11px; font-size: 13px; font-weight: 600; color: rgba(255,255,255,.45); background: none; border: none; cursor: pointer; transition: color .25s, transform .1s; }
+  .subtab-ind { pointer-events: none; z-index: 0; position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc(50% - 4px); border-radius: 11px; background: linear-gradient(135deg, rgba(109,91,255,.85), rgba(168,85,247,.85)); box-shadow: 0 6px 18px -6px rgba(124,108,255,.6), inset 0 1px 0 rgba(255,255,255,.2); transition: transform .42s cubic-bezier(.22,1.2,.36,1); }
+  .subtab-btn { position: relative; z-index: 2; flex: 1; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 9.5px 0; border-radius: 11px; font-size: 13px; font-weight: 600; color: rgba(255,255,255,.45); background: none; border: none; cursor: pointer; transition: color .25s, transform .1s; }
   .subtab-btn svg { width: 15px; height: 15px; }
   .subtab-btn:active { transform: scale(.96); }
   .subtab-btn.active { color: #fff; }
@@ -386,11 +386,11 @@
 
       <!-- Подразделы дня -->
       <div class="subtabs mt-3.5 fade-up d2" id="subTabs" role="tablist">
-        <div class="subtab-ind" id="subInd"></div>
-        <button type="button" class="subtab-btn active" data-sub="schedule">
+        <div class="subtab-ind" id="subInd" aria-hidden="true"></div>
+        <button type="button" class="subtab-btn active" data-sub="schedule" role="tab" aria-selected="true">
           <i data-lucide="calendar-clock"></i><span>Расписание</span>
         </button>
-        <button type="button" class="subtab-btn" data-sub="events">
+        <button type="button" class="subtab-btn" data-sub="events" role="tab" aria-selected="false">
           <i data-lucide="party-popper"></i><span>Мероприятия</span>
         </button>
       </div>
@@ -933,13 +933,27 @@ $('#todayBtn').addEventListener('click', () => { const t = todayOff(); selectDay
 /* ------- Подразделы дня: Расписание / Мероприятия ------- */
 const subInd = $('#subInd');
 function setSubTab(name) {
-  if (name === subTab) return;
-  subTab = name;
-  subInd.style.transform = name === 'events' ? 'translateX(100%)' : 'translateX(0)';
-  $$('.subtab-btn').forEach(b => b.classList.toggle('active', b.dataset.sub === name));
-  selectDay(dayIdx, name === 'events' ? 1 : -1, false, true);
+  const next = name === 'events' ? 'events' : 'schedule';
+  const changed = next !== subTab;
+  subTab = next;
+  // Синхронизируем визуальное состояние даже если оно разошлось с JS-состоянием.
+  if (subInd) subInd.style.transform = next === 'events' ? 'translateX(100%)' : 'translateX(0)';
+  $$('.subtab-btn').forEach(b => {
+    const active = b.dataset.sub === next;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', String(active));
+  });
+  // Всегда обновляем содержимое: это также восстанавливает расписание,
+  // если до этого перерисовка вкладки мероприятий прервалась.
+  selectDay(dayIdx, next === 'events' ? 1 : -1, !changed, true);
 }
-$$('.subtab-btn').forEach(b => b.addEventListener('click', () => setSubTab(b.dataset.sub)));
+const subTabsRoot = $('#subTabs');
+if (subTabsRoot) subTabsRoot.addEventListener('click', event => {
+  const button = event.target.closest('button[data-sub]');
+  if (!button || !subTabsRoot.contains(button)) return;
+  event.preventDefault();
+  setSubTab(button.dataset.sub);
+});
 
 /* ================= ЭКРАН УРОКА ================= */
 const lessonScreen = $('#screenLesson');
