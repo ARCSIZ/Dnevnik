@@ -36,7 +36,31 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
 }
 const PROD = process.env.NODE_ENV === 'production';
 const ROOT = __dirname;
-const DB_FILE = process.env.DATA_FILE ? path.resolve(process.env.DATA_FILE) : path.join(ROOT, 'data.json');
+
+/* Определяем путь к базе данных.
+   Приоритет: DATA_FILE, затем DATA_DIR/data.json, затем data.json рядом с сервером.
+   Если задан постоянный каталог, но база там ещё не создана, переносим в него
+   существующий data.json из корня проекта, не удаляя исходный файл. */
+function resolveDatabaseFile() {
+  const configuredFile = String(process.env.DATA_FILE || '').trim();
+  const configuredDir = String(process.env.DATA_DIR || '').trim();
+  const legacyRootFile = path.join(ROOT, 'data.json');
+  const targetFile = configuredFile
+    ? path.resolve(configuredFile)
+    : configuredDir
+      ? path.join(path.resolve(configuredDir), 'data.json')
+      : legacyRootFile;
+
+  if (path.resolve(targetFile) !== path.resolve(legacyRootFile)
+      && !fs.existsSync(targetFile)
+      && fs.existsSync(legacyRootFile)) {
+    fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+    fs.copyFileSync(legacyRootFile, targetFile);
+    console.log(`Существующая база скопирована в постоянный каталог: ${targetFile}`);
+  }
+  return targetFile;
+}
+const DB_FILE = resolveDatabaseFile();
 /* Логин приводим к нижнему регистру: при входе пользовательский ввод
    тоже нормализуется, иначе совпадение не случится. */
 const DEV_LOGIN = String(process.env.DEV_LOGIN || '').trim().toLowerCase();
@@ -144,10 +168,25 @@ function purgeSessions() {
   }
 }
 function readDB() {
-  try { DB = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch (e) { DB = clone(DEFAULTS); }
-  // Одноразовая очистка всех прежних демонстрационных данных.
-  // После записи version=3 последующие перезапуски больше не сбрасывают базу.
-  if (Number(DB.version || 0) < CLEAN_DB_VERSION) DB = clone(DEFAULTS);
+  if (fs.existsSync(DB_FILE)) {
+    // Не подменяем существующую, но повреждённую базу пустой: это могло бы
+    // уничтожить единственную копию данных. Останавливаем запуск с понятной ошибкой.
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    } catch (e) {
+      throw new Error(`Не удалось прочитать базу ${DB_FILE}; исходный файл сохранён. Проверьте резервную копию. Причина: ${e.message}`);
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`Файл базы ${DB_FILE} не содержит JSON-объект; файл не перезаписан.`);
+    }
+    DB = parsed;
+  } else {
+    DB = clone(DEFAULTS);
+  }
+
+  // Мигрируем старые версии без удаления аккаунтов, оценок и расписания.
+  // Раньше версия ниже 3 полностью заменялась DEFAULTS, из-за чего терялась база.
   for (const [key, value] of Object.entries(DEFAULTS)) if (DB[key] === undefined) DB[key] = clone(value);
   if (!Array.isArray(DB.accounts)) DB.accounts = [];
   if (!Array.isArray(DB.groups)) DB.groups = clone(DEFAULTS.groups);
@@ -161,9 +200,11 @@ function readDB() {
   }
   DB.accounts = DB.accounts.filter(a => a.role !== 'dev');
   DB.accounts.push({ id: 'developer', fio: 'Разработчик', login: DEV_LOGIN, passHash: hashPassword(DEV_PASSWORD), role: 'dev', subj: '', group: '', studentIndex: null });
+  DB.version = CLEAN_DB_VERSION;
   purgeSessions();
   ensurePush();
   writeDBNow();
+  console.log(`База данных: ${DB_FILE}; версия ${DB.version}; пользователей ${DB.accounts.filter(a => a.role !== 'dev').length}; групп ${DB.groups.length}`);
 }
 function writeDBNow() {
   fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
